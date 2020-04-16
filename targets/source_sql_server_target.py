@@ -1,30 +1,16 @@
 import pyodbc 
+from targets.base_targets import SqlServerTarget
 
-class SqlServerTarget: 
+class SourceSqlServerTarget(SqlServerTarget): 
     
     def __init__(self, configuration):
-        #TODO: validate inputs and raise exceptions if criteria no met.
-        self._server = configuration["server"]
-        self._database = configuration["database"]
+        super(SourceSqlServerTarget, self).__init__(configuration)
+        #TODO: validate inputs and raise exceptions if criteria not met.
         self._schema = configuration["schema"]
         self._tables = configuration["tables"]
-        connection_string = self.create_connection_string()
-        self._connection = pyodbc.connect(connection_string) 
-
-    def create_connection_string(self):
-        return f"DRIVER={{SQL Server}}; SERVER={self._server}; DATEBASE={self._database}; Trusted_Connection=yes"
          
     def get_tables(self):
         return self._tables
-
-    def get_server(self):
-        return self._server
-
-    def get_database(self):
-        return self._database
-
-    def get_schema(self):
-        return self._server
 
     def check_change_tracking (self, table_name): 
         if not table_name == None:
@@ -44,9 +30,6 @@ class SqlServerTarget:
         else:
             Exception(f"SqlServerTarget.add_Change_tracking: No table name provided.")
         return self.check_change_tracking(table_name)
-
-    def create_destination_tables(self):
-        pass
 
     def get_change_records(self):
         pass
