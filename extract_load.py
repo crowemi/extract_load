@@ -25,27 +25,30 @@ from targets.sql_server_target import SqlServerTarget
 # json = df.loc[0].to_json()
 # print(json)
 
-
-
 def main(configuration_path=None):
     configuration = None
 
     if not configuration_path == None: 
-        with open(os.path(configuration_path), "rb") as file:
+        with open(configuration_path, "rb") as file:
             try: 
                 configuration = json.loads(file.read())
             except Exception as ex: 
                 print(f'extract_load.main: Failed loading configuration {configuration_path}.')
                 print(f'extract_load.main: {ex}')
 
-    # determin what our source
-    sql_server_target = SqlServerTarget(configuration)    
+    # determine what our source is, for now it will only be SQL Server Source
+    source_target = SqlServerTarget(configuration["source"][0]["sql_server_target"])    
+    # destination_target = SqlServerTarget(configuration["destimation"][0]["sql_server_target"])
 
+    tables = source_target.get_tables()
+    change_tracking_exists = source_target.check_change_tracking(tables[0])
+    print(change_tracking_exists)
 
 if __name__ == "__main__":
-    if not sys.argv[1] == None:
-        configuration_path = sys.argv[1]
+    if len(sys.argv) >= 2: 
+        if sys.argv[1] != None:
+            configuration_path = sys.argv[1]
     else:
-        configuration_path = "configuration.json"
+        configuration_path = "E:\code\extract_load\configuration.json"
 
     main(configuration_path)
