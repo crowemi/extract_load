@@ -17,10 +17,10 @@ class SourceSqlServerTarget(SqlServerTarget):
             check_change_tracking_query = f"SELECT COUNT(1) FROM {self._database}.sys.change_tracking_tables ctt JOIN {self._database}.sys.tables t ON t.object_id = ctt.object_id AND t.name = '{table_name}'"
             cursor = self._connection.cursor()
             cursor.execute(check_change_tracking_query)
-            ret = cursor.fetchval()
+            ret = bool(cursor.fetchval())
         else: 
             Exception(f"SqlServerTarget.check_Change_tracking: No table name provided.")
-        return bool(ret)
+        return ret
 
     def add_change_tracking (self, table_name):
         if not table_name == None: 
@@ -37,8 +37,7 @@ class SourceSqlServerTarget(SqlServerTarget):
     def get_records(self):
         pass
 
-    def load_records(self):
-        pass
+
 
     
 

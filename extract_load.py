@@ -3,6 +3,7 @@ import os
 import pyodbc 
 import pandas as pd
 import json
+import logging
 
 from targets.source_sql_server_target import SourceSqlServerTarget
 from targets.destination_sql_server_target import DestinationSqlServerTarget
