@@ -7,19 +7,7 @@ import logging
 
 from targets.source_sql_server_target import SourceSqlServerTarget
 from targets.destination_sql_server_target import DestinationSqlServerTarget
-
-#  
-# 1. Get the requested source tables from list (database or configuration)
-#   a. Does a stage table exist in destination?
-#       i. if not, create stable table in destination 
-#   b. Does change tracking exist?
-#       i. if not, add change tracking to table
-#   c. Has the application run before? 
-#       i. if not, get change key, run "full load"
-#      ii.
-# 2. 
-#                    
-
+                    
 # conn = pyodbc.connect('DRIVER={SQL Server}; SERVER=DEVSQL17TRZ3; DATEBASE=hpXr_db; Trusted_Connection=yes')
 # sql = "SELECT TOP 10 * FROM facets.dbo.CMC_CLCL_CLAIM"
 
@@ -49,8 +37,16 @@ def main(configuration_path=None):
         if not source_target.check_change_tracking(table): 
             source_target.add_change_tracking(table)
 
-        destination_target.check_destination_table(table, source_target.get_database)        
+        # get the current change version
+        current_change_version = source_target.get_new_change_key()
 
+        
+
+        # check that the destination tables exist, both stage and psa - if either doesn't exist create them
+        if not destination_target.check_stg_destination_table(table, source_target.get_database) and destination_target.check_psa_destination_table(table, source_target.get_database):
+            destination_target.create_destination_table(table, source_target.get_database)        
+
+        # insert record into change log and get last change record
 
 if __name__ == "__main__":
     if len(sys.argv) >= 2: 
