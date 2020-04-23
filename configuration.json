@@ -1,28 +1,24 @@
 {
     "source" : [
         {
-            "sql_server_target" : {
-                "server" : "DEVSQL17TRZ3",
-                "database" : "facets",
-                "schema" : "dbo", 
-                "tables" : [
-                    "CMC_UMSV_SERVICES",
-                    "CMC_UMIN_INPATIENT",
-                    "CMC_UMUM_UTIL_MGT",
-                    "CMC_EXCD_EXPL_CD",
-                    "CMC_UMAC_ACTIVITY",
-                    "CMC_UMVT_STATUS"
-                ]
-            }
+            "server" : "DEVSQL17TRZ3",
+            "database" : "facets",
+            "schema" : "dbo", 
+            "tables" : [
+                "CMC_UMSV_SERVICES",
+                "CMC_UMIN_INPATIENT",
+                "CMC_UMUM_UTIL_MGT",
+                "CMC_EXCD_EXPL_CD",
+                "CMC_UMAC_ACTIVITY",
+                "CMC_UMVT_STATUS"
+            ]
         }
     ], 
     "destination" : {
-        "sql_server_target" : {
-            "server" : "DEVSQL17TRZRP",
-            "database" : "hpXr_Stage",
-            "schema" : "stg",
-            "load_psa" : true
-        }
+        "server" : "DEVSQL17TRZRP",
+        "database" : "hpXr_Stage",
+        "schema" : "stg",
+        "load_psa" : true
     }
 
 }

@@ -4,17 +4,17 @@ import pyodbc
 import pandas as pd
 import json
 import logging
+import queue
+import threading
 
 from targets.source_sql_server_target import SourceSqlServerTarget
 from targets.destination_sql_server_target import DestinationSqlServerTarget
                     
-# conn = pyodbc.connect('DRIVER={SQL Server}; SERVER=DEVSQL17TRZ3; DATEBASE=hpXr_db; Trusted_Connection=yes')
-# sql = "SELECT TOP 10 * FROM facets.dbo.CMC_CLCL_CLAIM"
-
 # df = pd.read_sql(sql, conn)
 # json = df.loc[0].to_json()
 # print(json)
 
+#TODO: add logging
 def main(configuration_path=None):
     configuration = None
 
@@ -26,27 +26,37 @@ def main(configuration_path=None):
                 print(f'extract_load.main: Failed loading configuration {configuration_path}.')
                 print(f'extract_load.main: {ex}')
 
+    source_targets = []
+    destination_target = DestinationSqlServerTarget(configuration["destination"]["server"], configuration["destination"]["database"], configuration["destination"]["schema"], configuration["destination"]["load_psa"])
 
-    #TODO: determine what our source is, for now it will only be SQL Server Source
-    #TODO: add handling for multiple sources
-    source_target = SourceSqlServerTarget(configuration["source"][0]["sql_server_target"])    
-    destination_target = DestinationSqlServerTarget(configuration["destination"]["sql_server_target"])
+    for target in configuration["source"]:
+        for table in target["tables"]:
+            source_targets.append(SourceSqlServerTarget(target["server"], target["database"], target["schema"], table))
 
-    for table in source_target.get_tables():
-        # check change tracking, if change tracking is not enabled add it
-        if not source_target.check_change_tracking(table): 
-            source_target.add_change_tracking(table)
+    for target in source_targets:
+        process_source_target(target, destination_target)
 
-        # get the current change version
-        current_change_version = source_target.get_new_change_key()
+    #     # get records new thread which loads the queue 
+    #     get_record_thread = threading.Thread(source_target.get_records())
+    #     get_record_thread.join()
 
-        
 
-        # check that the destination tables exist, both stage and psa - if either doesn't exist create them
-        if not destination_target.check_stg_destination_table(table, source_target.get_database) and destination_target.check_psa_destination_table(table, source_target.get_database):
-            destination_target.create_destination_table(table, source_target.get_database)        
+def process_source_target(source_target, destination_target):
+    # check change tracking, if change tracking is not enabled add it 
+    if not source_target.check_change_tracking(): 
+        source_target.add_change_tracking()
 
-        # insert record into change log and get last change record
+    # get the current change version
+    current_change_version = source_target.get_new_change_tracking_key()
+    # create shell record for this change, we'll use the ID later to update the shell record flag completion of load
+    current_change_log_id = destination_target.set_change_tracking_key(source_target.get_table_name, source_target.get_database_name, current_change_version)
+    # get the previous change version 
+    previous_change_version = destination_target.get_previous_change_tracking_key(source_target.get_table_name, source_target.get_database_name)
+
+    # check that the destination tables exist, both stage and psa - if either doesn't exist create them
+    if not destination_target.check_stg_destination_table(source_target.get_table_name, source_target.get_database) and destination_target.check_psa_destination_table(source_target.get_table_name, source_target.get_database):
+        destination_target.create_destination_table(source_target.get_table_name, source_target.get_database)
+
 
 if __name__ == "__main__":
     if len(sys.argv) >= 2: 
