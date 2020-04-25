@@ -74,5 +74,13 @@ class DestinationSqlServerTarget(SqlServerTarget):
         return ret 
 
 
-    def load_records(self):
+    def load_psa(self):
+        with self._connection as conn:
+            crsr = conn.cursor()
+            crsr.execute(f"")
+            ret = crsr.fetchval()
+        return ret
+
+
+    def load_records(self, records):
         pass

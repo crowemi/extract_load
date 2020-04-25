@@ -1,4 +1,5 @@
-import pyodbc 
+import pyodbc, json 
+import pandas as pd
 from queue import Queue
 
 from targets.base_targets import SqlServerTarget
@@ -12,6 +13,9 @@ class SourceSqlServerTarget(SqlServerTarget):
         self._table = table
         self._record_keys = Queue()
         self._primary_keys = self._get_primary_keys()
+
+        self._change_records = Queue()
+        self._records = Queue()
 
 
     def get_table_name(self):
@@ -71,16 +75,56 @@ class SourceSqlServerTarget(SqlServerTarget):
         return primary_keys
 
 
-    def get_change_records(self):
-        # this should be records that fall between last change key and current change key 
-        pass
+    def get_change_records(self, previous_change_key, new_change_key):
+        if previous_change_key == 0:
+            # the extract has never run before, not change key exists in change store
+            query = f"select 'I', {self.format_select_primary_keys()} from {self._database}.{self._schema}.{self._table}"
+        else:
+            query = f"select sys_change_operation, {self.format_select_primary_keys()} from changetable(changes {self._table}, {new_change_key}) ct" 
+            
+        with self.create_connection() as conn:
+            crsr = conn.cursor()
+            rows = crsr.execute(query)
+            for row in rows:
+                self._change_records.put(row)
+        # add poison pill for downstream process
+        self._change_records.put(None)
 
+    def format_select_primary_keys(self):
+        ret = ''
+        for index, key in enumerate(self._primary_keys):
+            ret += f'{key[0]}'
+            if (index + 1) < len(self._primary_keys): 
+                ret += ', '
+        return ret
+
+    def format_where_primary_keys(self, record):
+        ret = ''
+        for index, key in enumerate(self._primary_keys):
+            ret += f"{key[0]} = '{record[key[1]]}'"
+            if (index + 1) < len(self._primary_keys): 
+                ret += ' and '
+        return ret
 
     def get_records(self):
-        pass
+        while True:
+            # try:
+                record = self._change_records.get() 
+                if record is None:
+                    self._change_records.task_done()
+                    # add poison pill for downstream process
+                    self._records.put(None)
+                    break
 
-
-
+                with self.create_connection() as conn:
+                    crsr = conn.cursor()
+                    query = f"select * from {self._database}.{self._schema}.{self._table} where {self.format_where_primary_keys(record)} for json path, without_array_wrapper"
+                    crsr.execute(query)
+                    res = crsr.fetchone()
+                    self._records.put(res)
+                self._change_records.task_done()
+            # except Queue.Empty: 
+                # print("Queue empty.")
     
 
 

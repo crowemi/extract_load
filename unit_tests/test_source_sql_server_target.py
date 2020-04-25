@@ -1,4 +1,4 @@
-import sys, os 
+import sys, os, threading 
 import unittest
 import json 
 
@@ -7,10 +7,10 @@ from targets.source_sql_server_target import SourceSqlServerTarget
 class TestSourceSqlServerTarget(unittest.TestCase):
     
     def setUp(self):
-        self._configuration = json.loads('{ "server" : "DEVSQL17TRZ3", "database" : "facets", "schema" : "dbo", "tables" : [ "CMC_CLCL_CLAIM" ] }')
+        self._configuration = json.loads('{ "server" : "DEVSQL17TRZ3", "database" : "facets", "schema" : "dbo", "tables" : [ "CMC_UMSV_SERVICES" ] }')
         self._source_sql_server_target = SourceSqlServerTarget(self._configuration["server"], self._configuration["database"], self._configuration["schema"], self._configuration["tables"][0])
 
-    def test_get_tables(self):
+    def test_get_tables(self): 
         pass
 
     def test_check_change_tracking(self):
@@ -24,7 +24,22 @@ class TestSourceSqlServerTarget(unittest.TestCase):
         self.assertIsNotNone(key) 
     
     def test_get_change_records(self):
-        pass
+        get_change_records = threading.Thread(target=self._source_sql_server_target.get_change_records,args=(0,1))
+        get_change_records.start()
+
+        threads = []
+
+        for _ in range(10):
+            get_records = threading.Thread(target=self._source_sql_server_target.get_records)
+            get_records.start()
+            threads.append(get_records)
+
+        get_change_records.join()
+
+        for thread in threads: 
+            thread.join()
+
+        print("All Done!")
 
     def test_get_records(self):
         pass
@@ -35,3 +50,8 @@ class TestSourceSqlServerTarget(unittest.TestCase):
     def test_get_primary_key(self):
         self.assertIsNotNone(self._source_sql_server_target._get_primary_keys())
         
+    def test_format_select_primary_keys(self):
+        self.assertIsNotNone(self._source_sql_server_target.format_select_primary_keys())
+
+    def test_format_where_primary_keys(self):
+        self.assertIsNotNone(self._source_sql_server_target.format_where_primary_keys(("I", "123", "456")))

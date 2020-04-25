@@ -1,13 +1,6 @@
-import sys
-import os
-import pyodbc 
+import sys, os, pyodbc, json, logging, threading, multiprocessing, queue
+
 import pandas as pd
-import json
-import logging
-from queue import Queue
-import threading
-import multiprocessing
-from collections import namedtuple
 
 from targets.source_sql_server_target import SourceSqlServerTarget
 from targets.destination_sql_server_target import DestinationSqlServerTarget
@@ -16,7 +9,7 @@ from targets.destination_sql_server_target import DestinationSqlServerTarget
 # json = df.loc[0].to_json()
 # print(json)
 
-#TODO: add logging
+logging.basicConfig(filename="log.log", level=logging.DEBUG)
 def process_source_start():
     print("start")
 
@@ -40,6 +33,20 @@ def process_source_target(input):
     if not destination_target.check_stg_destination_table(source_target.get_table_name, source_target.get_database_name) and destination_target.check_psa_destination_table(source_target.get_table_name, source_target.get_database_name):
         destination_target.create_destination_table(source_target.get_table_name, source_target.get_database_name)
 
+    # queue change records to be processed 
+    get_change_records = threading.Thread(target=source_target.get_change_records, args=(previous_change_version, current_change_version))
+    get_change_records.start()
+    # queue records to be loaded 
+    get_records = threading.Thread(target=source_target.get_records)
+    get_records.start()
+    # load records 
+    load_records = threading.Thread(target=destination_target.load_records)
+    load_records.start()
+
+
+    get_change_records.join()
+    get_records.join()
+    load_records.join()
 
 if __name__ == "__main__":
     if len(sys.argv) >= 2: 
@@ -66,8 +73,6 @@ if __name__ == "__main__":
     for target in configuration["source"]:
         for table in target["tables"]:
             data.append((target["server"], target["database"], target["schema"], table, configuration["destination"]))
-            # create each individual processes for each source target, we can then throttle based on machine cores. Arguements must be picklable (serializable/deserializable)
-            # source_target_processes.append(multiprocessing.Process(target=process_source_target, args=(target["server"], target["database"], target["schema"], table, configuration["destination"]), daemon=True))
     
     pool.map(process_source_target, data)
     pool.close()
