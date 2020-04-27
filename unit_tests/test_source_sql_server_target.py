@@ -3,12 +3,14 @@ import unittest
 import json 
 
 from targets.source_sql_server_target import SourceSqlServerTarget
+from targets.destination_sql_server_target import DestinationSqlServerTarget
 
 class TestSourceSqlServerTarget(unittest.TestCase):
     
     def setUp(self):
         self._configuration = json.loads('{ "server" : "DEVSQL17TRZ3", "database" : "facets", "schema" : "dbo", "tables" : [ "CMC_UMSV_SERVICES" ] }')
         self._source_sql_server_target = SourceSqlServerTarget(self._configuration["server"], self._configuration["database"], self._configuration["schema"], self._configuration["tables"][0])
+        self._destination_sql_server_target = DestinationSqlServerTarget("DEVSQL17TRZRP", "hpXr_Stage", "stg", True)
 
     def test_get_tables(self): 
         pass
@@ -24,9 +26,15 @@ class TestSourceSqlServerTarget(unittest.TestCase):
         self.assertIsNotNone(key) 
     
     def test_get_change_records(self):
+
+        self._destination_sql_server_target.create_destination_table(self._source_sql_server_target.get_table_name(), self._source_sql_server_target.get_database_name())
+        
         get_change_records = threading.Thread(target=self._source_sql_server_target.get_change_records,args=(0,1))
         get_change_records.start()
-
+        
+        load_change_records = threading.Thread(target=self._destination_sql_server_target.load_records, args=(self._source_sql_server_target.get_table_name(), self._source_sql_server_target.get_database_name(), self._source_sql_server_target._records))
+        load_change_records.start()
+        
         threads = []
 
         for _ in range(10):

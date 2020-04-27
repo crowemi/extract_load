@@ -108,23 +108,21 @@ class SourceSqlServerTarget(SqlServerTarget):
 
     def get_records(self):
         while True:
-            # try:
-                record = self._change_records.get() 
-                if record is None:
-                    self._change_records.task_done()
-                    # add poison pill for downstream process
-                    self._records.put(None)
-                    break
-
-                with self.create_connection() as conn:
-                    crsr = conn.cursor()
-                    query = f"select * from {self._database}.{self._schema}.{self._table} where {self.format_where_primary_keys(record)} for json path, without_array_wrapper"
-                    crsr.execute(query)
-                    res = crsr.fetchone()
-                    self._records.put(res)
+            record = self._change_records.get() 
+            if record is None:
                 self._change_records.task_done()
-            # except Queue.Empty: 
-                # print("Queue empty.")
+                # add poison pill for downstream process
+                self._records.put(None)
+                break
+
+            with self.create_connection() as conn:
+                crsr = conn.cursor()
+                query = f"select * from {self._database}.{self._schema}.{self._table} where {self.format_where_primary_keys(record)} --for json path, without_array_wrapper"
+                crsr.execute(query)
+                res = crsr.fetchone()
+                self._records.put(res)
+            self._change_records.task_done()
+
     
 
 

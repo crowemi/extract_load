@@ -82,5 +82,19 @@ class DestinationSqlServerTarget(SqlServerTarget):
         return ret
 
 
-    def load_records(self, records):
-        pass
+    def load_records(self, source_table_name, source_database_name, records):
+        while True:
+            record = records.get()
+            if(record == None):
+                record.task_done()
+                break
+
+            json_data = record[0]
+
+            with self._connection as conn:
+                crsr = conn.cursor()
+                query = f"INSERT INTO {self._database}.{self._schema}.STG_{source_database_name}_{source_table_name} VALUES (GETDATE(), '', '{json_data}' )"
+                crsr.execute(query)
+                crsr.commit()
+            
+

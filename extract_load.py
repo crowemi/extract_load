@@ -40,7 +40,7 @@ def process_source_target(input):
     get_records = threading.Thread(target=source_target.get_records)
     get_records.start()
     # load records 
-    load_records = threading.Thread(target=destination_target.load_records)
+    load_records = threading.Thread(target=destination_target.load_records, args=(source_target._records))
     load_records.start()
 
 
