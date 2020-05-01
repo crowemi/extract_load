@@ -1,4 +1,5 @@
-
+import pandas as pd
+import json
 from targets.base_targets import SqlServerTarget
 
 class DestinationSqlServerTarget(SqlServerTarget):
@@ -17,7 +18,7 @@ class DestinationSqlServerTarget(SqlServerTarget):
 
 
     def check_stg_destination_table(self, source_table_name, source_database_name):
-        return self.check_destination_table(f"SELECT COUNT(1) FROM {self._database}.sys.tables t WHERE t.name = 'STG_{source_database_name.upper()}_{source_table_name.upper()}'")
+        return self.check_destination_table(f"SELECT COUNT(1) FROM {self._database}.sys.tables t WHERE t.name = '{self.get_stg_destination_table(source_table_name, source_database_name)}'")
 
 
     def check_destination_table(self, query):
@@ -73,6 +74,8 @@ class DestinationSqlServerTarget(SqlServerTarget):
             ret = crsr.fetchval()
         return ret 
 
+    def get_stg_destination_table(self, source_table_name, source_database_name):
+        return f'STG_{source_database_name.upper()}_{source_table_name.upper()}'
 
     def load_psa(self):
         with self._connection as conn:
@@ -85,16 +88,11 @@ class DestinationSqlServerTarget(SqlServerTarget):
     def load_records(self, source_table_name, source_database_name, records):
         while True:
             record = records.get()
-            if(record == None):
+            if(record.empty):
                 record.task_done()
                 break
-
-            json_data = record[0]
-
-            with self._connection as conn:
-                crsr = conn.cursor()
-                query = f"INSERT INTO {self._database}.{self._schema}.STG_{source_database_name}_{source_table_name} VALUES (GETDATE(), '', '{json_data}' )"
-                crsr.execute(query)
-                crsr.commit()
             
+            #TODO: make schema configurable
+            record.to_sql(name=self.get_stg_destination_table(source_table_name, source_database_name), index=False, schema='stg', if_exists='append', con=self.create_engine())
+            print('Insert records.')
 

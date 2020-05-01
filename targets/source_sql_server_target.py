@@ -1,6 +1,10 @@
 import pyodbc, json 
 import pandas as pd
+
+import threading
+
 from queue import Queue
+from datetime import datetime
 
 from targets.base_targets import SqlServerTarget
 
@@ -16,6 +20,9 @@ class SourceSqlServerTarget(SqlServerTarget):
 
         self._change_records = Queue()
         self._records = Queue()
+        #TODO: make this configurable
+        self._semaphore = threading.BoundedSemaphore(4) 
+
 
 
     def get_table_name(self):
@@ -107,21 +114,41 @@ class SourceSqlServerTarget(SqlServerTarget):
         return ret
 
     def get_records(self):
-        while True:
-            record = self._change_records.get() 
-            if record is None:
-                self._change_records.task_done()
-                # add poison pill for downstream process
-                self._records.put(None)
-                break
+        with self.create_connection() as conn:
+            #TODO: Add change tracking functionality
+            #TODO: Make chunksize configurable 
+            query = f"select * from {self._database}.{self._schema}.{self._table}"
+            df_chunk = pd.read_sql_query(query, conn, chunksize=5000)
 
-            with self.create_connection() as conn:
-                crsr = conn.cursor()
-                query = f"select * from {self._database}.{self._schema}.{self._table} where {self.format_where_primary_keys(record)} --for json path, without_array_wrapper"
-                crsr.execute(query)
-                res = crsr.fetchone()
-                self._records.put(res)
-            self._change_records.task_done()
+            threads = list()
+
+            for chunk in df_chunk:
+                thread = threading.Thread(target=self.process_chunks, args=([chunk]))
+                thread.start()
+                threads.append(thread)
+
+            for thread in enumerate(threads):
+                thread.join()
+
+            # Add poison pill for downstream processes
+            self._records.put(pd.DataFrame())
+
+    def process_chunks(self, chunk):
+        # print(str(f'{threading.get_ident()} : Awaiting semaphore.'))
+        # self._semaphore.acquire()
+        # try:
+        df = pd.DataFrame()
+        df['CHANGE_DT'] = chunk.apply(lambda row: datetime.now(), axis=1)
+        df['METADATA'] = chunk.apply(lambda row: '', axis=1)
+        df['RECORD'] = chunk.apply(lambda row: row.to_json(date_format='iso'), axis=1)                
+        self._records.put(df)
+        print(str(f'{threading.get_ident()} : Added records to queue.'))
+        # finally:
+        #     self._semaphore.release()
+        #     print(str(f'{threading.get_ident()} : Released semaphore.'))
+
+        
+        
 
     
 

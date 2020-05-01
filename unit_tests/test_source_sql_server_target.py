@@ -1,7 +1,11 @@
 import sys, os, threading 
 import unittest
 import json 
+import pandas as pd
+import urllib
+from sqlalchemy import create_engine 
 
+from datetime import datetime
 from targets.source_sql_server_target import SourceSqlServerTarget
 from targets.destination_sql_server_target import DestinationSqlServerTarget
 
@@ -24,28 +28,19 @@ class TestSourceSqlServerTarget(unittest.TestCase):
     def test_get_new_change_tracking_key(self):
         key = self._source_sql_server_target.get_new_change_tracking_key()
         self.assertIsNotNone(key) 
-    
+     
     def test_get_change_records(self):
 
         self._destination_sql_server_target.create_destination_table(self._source_sql_server_target.get_table_name(), self._source_sql_server_target.get_database_name())
         
-        get_change_records = threading.Thread(target=self._source_sql_server_target.get_change_records,args=(0,1))
+        get_change_records = threading.Thread(target=self._source_sql_server_target.get_records)
         get_change_records.start()
-        
-        load_change_records = threading.Thread(target=self._destination_sql_server_target.load_records, args=(self._source_sql_server_target.get_table_name(), self._source_sql_server_target.get_database_name(), self._source_sql_server_target._records))
-        load_change_records.start()
-        
-        threads = []
 
-        for _ in range(10):
-            get_records = threading.Thread(target=self._source_sql_server_target.get_records)
-            get_records.start()
-            threads.append(get_records)
-
+        for _ in range (3):
+            load_change_records = threading.Thread(target=self._destination_sql_server_target.load_records, args=(self._source_sql_server_target.get_table_name(), self._source_sql_server_target.get_database_name(), self._source_sql_server_target._records))
+            load_change_records.start()
+        
         get_change_records.join()
-
-        for thread in threads: 
-            thread.join()
 
         print("All Done!")
 
@@ -63,3 +58,21 @@ class TestSourceSqlServerTarget(unittest.TestCase):
 
     def test_format_where_primary_keys(self):
         self.assertIsNotNone(self._source_sql_server_target.format_where_primary_keys(("I", "123", "456")))
+
+
+    def test_chunksize (self): 
+
+        params = urllib.parse.quote_plus("DRIVER={ODBC Driver 17 for SQL Server};SERVER=DEVSQL17TRZRP;DATABASE=hpXr_Stage;Trusted_Connection=yes")
+        engine = create_engine("mssql+pyodbc:///?odbc_connect=%s" % params)
+
+        with self._source_sql_server_target._connection as conn:
+            query = "select * from CMC_UMSV_SERVICES"
+            df_chunk = pd.read_sql_query(query, conn, chunksize=10000)
+            for chunk in df_chunk:
+                t = type(chunk)
+                d = pd.DataFrame()
+                d['CHANGE_DT'] = chunk.apply(lambda row: datetime.now(), axis=1)
+                d['METADATA'] = chunk.apply(lambda row: '', axis=1)
+                d['RECORD'] = chunk.apply(lambda row: row.to_json(date_format='iso'), axis=1)
+                
+                d.to_sql(name='STG_FACETS_CMC_UMSV_SERVICES', index=False, schema='stg', if_exists='append', con=engine)

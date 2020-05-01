@@ -1,3 +1,5 @@
+import urllib
+from sqlalchemy import create_engine 
 import pyodbc
 
 class SqlServerTarget:
@@ -20,3 +22,8 @@ class SqlServerTarget:
 
     def create_connection(self):
         return pyodbc.connect(self.create_connection_string())
+
+    def create_engine(self):
+        connection_string = self.create_connection_string()
+        params = urllib.parse.quote_plus(connection_string)
+        return create_engine("mssql+pyodbc:///?odbc_connect=%s" % params, fast_executemany=True)
