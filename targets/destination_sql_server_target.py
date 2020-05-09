@@ -89,10 +89,11 @@ class DestinationSqlServerTarget(SqlServerTarget):
         while True:
             record = records.get()
             if(record.empty):
-                record.task_done()
+                records.task_done()
                 break
             
             #TODO: make schema configurable
             record.to_sql(name=self.get_stg_destination_table(source_table_name, source_database_name), index=False, schema='stg', if_exists='append', con=self.create_engine())
+            records.task_done()
             print('Insert records.')
 

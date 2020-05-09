@@ -3,6 +3,8 @@ import unittest
 import json 
 import pandas as pd
 import urllib
+import asyncio
+
 from sqlalchemy import create_engine 
 
 from datetime import datetime
@@ -13,8 +15,14 @@ class TestSourceSqlServerTarget(unittest.TestCase):
     
     def setUp(self):
         self._configuration = json.loads('{ "server" : "DEVSQL17TRZ3", "database" : "facets", "schema" : "dbo", "tables" : [ "CMC_UMSV_SERVICES" ] }')
-        self._source_sql_server_target = SourceSqlServerTarget(self._configuration["server"], self._configuration["database"], self._configuration["schema"], self._configuration["tables"][0])
         self._destination_sql_server_target = DestinationSqlServerTarget("DEVSQL17TRZRP", "hpXr_Stage", "stg", True)
+        self._source_sql_server_target = SourceSqlServerTarget(
+            self._configuration["server"], 
+            self._configuration["database"], 
+            self._configuration["schema"], 
+            self._configuration["tables"][0],
+            self._destination_sql_server_target
+            )
 
     def test_get_tables(self): 
         pass
@@ -32,15 +40,31 @@ class TestSourceSqlServerTarget(unittest.TestCase):
     def test_get_change_records(self):
 
         self._destination_sql_server_target.create_destination_table(self._source_sql_server_target.get_table_name(), self._source_sql_server_target.get_database_name())
-        
-        get_change_records = threading.Thread(target=self._source_sql_server_target.get_records)
-        get_change_records.start()
 
-        for _ in range (3):
-            load_change_records = threading.Thread(target=self._destination_sql_server_target.load_records, args=(self._source_sql_server_target.get_table_name(), self._source_sql_server_target.get_database_name(), self._source_sql_server_target._records))
-            load_change_records.start()
+        self._source_sql_server_target.get_records()
+
+
+        # loop = asyncio.get_event_loop()
+
+        # try:
+        #     loop.run_until_complete(self._source_sql_server_target.get_records())
+        # finally:
+        #     loop.close()
+
+        # get_records = threading.Thread(target=self._source_sql_server_target.get_records, name="master-get-records")
+        # get_records.start()
+
+        # load_threads = [] 
         
-        get_change_records.join()
+        # for _ in range (3):
+        #     load_records = threading.Thread(target=self._destination_sql_server_target.load_records, name="master-load-records", args=(self._source_sql_server_target.get_table_name(), self._source_sql_server_target.get_database_name(), self._source_sql_server_target._records))
+        #     load_records.start()
+        #     load_threads.append(load_records)
+        
+        # get_records.join()
+        
+        # for thread in load_threads:
+        #     thread.join()
 
         print("All Done!")
 
@@ -67,7 +91,7 @@ class TestSourceSqlServerTarget(unittest.TestCase):
 
         with self._source_sql_server_target._connection as conn:
             query = "select * from CMC_UMSV_SERVICES"
-            df_chunk = pd.read_sql_query(query, conn, chunksize=10000)
+            df_chunk = pd.read_sql_query(query, conn, chunksize=1000)
             for chunk in df_chunk:
                 t = type(chunk)
                 d = pd.DataFrame()
