@@ -90,13 +90,23 @@ class TestSourceSqlServerTarget(unittest.TestCase):
         engine = create_engine("mssql+pyodbc:///?odbc_connect=%s" % params)
 
         with self._source_sql_server_target._connection as conn:
-            query = "select * from CMC_UMSV_SERVICES"
-            df_chunk = pd.read_sql_query(query, conn, chunksize=1000)
+            query = "select * from CMC_CLCL_CLAIM WHERE CLCL_ID = '101270213700'"
+            df_chunk = pd.read_sql_query(query, conn, chunksize=1)
             for chunk in df_chunk:
-                t = type(chunk)
+                t = type(chunk['ATXR_SOURCE_ID'])
                 d = pd.DataFrame()
-                d['CHANGE_DT'] = chunk.apply(lambda row: datetime.now(), axis=1)
-                d['METADATA'] = chunk.apply(lambda row: '', axis=1)
-                d['RECORD'] = chunk.apply(lambda row: row.to_json(date_format='iso'), axis=1)
+                # d['CHANGE_DT'] = chunk.apply(lambda row: datetime.now(), axis=1)
+                # d['METADATA'] = chunk.apply(lambda row: '', axis=1)
+                # d['RECORD'] = chunk.apply(lambda row: row.to_json(date_format='iso'), axis=1)
                 
-                d.to_sql(name='STG_FACETS_CMC_UMSV_SERVICES', index=False, schema='stg', if_exists='append', con=engine)
+                # m = chunk.select_dtypes(include=['datetime64', 'date', 'datetime'])
+                z = chunk.filter(regex ='DATE|_DT|TIMESTAMP', axis =1 )
+                d = chunk.select_dtypes(include=['datetime64', 'datetime', 'datetime64']).columns
+                # d = chunk.filter(regex='DATE|_DT|TIMESTRAP',axis='columns').columns
+                for col in d: 
+                    chunk[col] = pd.to_datetime(chunk[col], errors='coerce')
+
+                # chunk['CLCL_RELHP_FROM_DT'] = pd.to_datetime(chunk['CLCL_RELHP_FROM_DT'], errors='coerce')
+                
+                print(chunk.select_dtypes(include=['datetime64']))
+                chunk.to_sql(name='STG_FACETS_CMC_UMSV_SERVICES2', index=False, schema='stg', if_exists='append', con=engine)

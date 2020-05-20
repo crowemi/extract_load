@@ -119,29 +119,29 @@ class SourceSqlServerTarget(SqlServerTarget):
                 ret += ' and '
         return ret
 
-    def get_records(self):
-        conn = self.create_engine()
+    # def get_records(self):
+    #     conn = self.create_engine()
 
-        #TODO: Add change tracking functionality
-        #TODO: Make chunksize configurable
-        generator = pd.read_sql_table(self._table, con = conn, chunksize=10000)
+    #     #TODO: Add change tracking functionality
+    #     #TODO: Make chunksize configurable
+    #     generator = pd.read_sql_table(self._table, con = conn, chunksize=100 , 00)
 
-        for index, chunk in enumerate(generator):
-            self._records.put([index, chunk])
+    #     for index, chunk in enumerate(generator):
+    #         self._records.put([index, chunk])
 
-        # poison pill
-        self._records.put(None)
+    #     # poison pill
+    #     self._records.put(None)
 
-        processes = list()
+    #     processes = list()
         
-        #start multiprocesses
-        for index, _ in enumerate(range(3)):
-            p = Process(target=self.multi_process_chunks)
-            p.start()
-            processes.append(p)
+    #     #start multiprocesses
+    #     for index, _ in enumerate(range(3)):
+    #         p = Process(target=self.multi_process_chunks)
+    #         p.start()
+    #         processes.append(p)
 
-        for process in processes:
-            process.join()
+    #     for process in processes:
+    #         process.join()
 
 
     def multi_process_chunks(self):

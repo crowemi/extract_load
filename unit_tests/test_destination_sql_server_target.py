@@ -21,7 +21,7 @@ class TestDestinationSqlServerTarget(unittest.TestCase):
         self.assertTrue(self._destination_sql_server_target.check_stg_destination_table("TEST_CMC_CLCL_CLAIM", "facets"))
 
     def test_create_destination_table(self):
-        self.assertTrue(self._destination_sql_server_target.create_destination_table("TEST_CMC_CLCL_CLAIM", "facets"))
+        self.assertTrue(self._destination_sql_server_target.create_destination_table("CMC_UMSV_SERVICES", "facets"))
 
     def test_set_change_tracking_key(self):
         self.assertTrue(self._destination_sql_server_target.set_change_tracking_key("TEST_CMC_CLCL_CLAIM", "facets", 100))
