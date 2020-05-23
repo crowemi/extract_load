@@ -1,38 +1,11 @@
 {
     "source" : [
         {
-            "server" : "DEVSQL17TRZ1",
-            "database" : "CAE_OLTP",
+            "server" : "DEVSQL17TRZ3",
+            "database" : "facets",
             "schema" : "dbo", 
             "tables" : [
-                "MEMBER",
-                "MEMBER_COVERAGE",
-                "ORG_CASE",
-                "ORG_UM_CASE",
-                "ORG_PATIENT",
-                "ORG_PHYSICIAN",
-                "ORG_UM_AUTH_STATUS_TYPE",
-                "ORG_UM_CASE_DIAGNOSIS",
-                "ORG_UM_CASE_PROCEDURE",
-                "ORG_UM_LOS",
-                "ORG_UM_SERVICE",
-                "ORG_UM_LOS_EXTENSION",
-                "ORG_UM_SERVICE_CERT",
-                "ORG_USER",
-                "STRING_LOCALE",
-                "RESOURCE_FILE",
-                "ORG_INFO",
-                "ORG_NOTEPAD",
-                "CONCEPT",
-                "PNAnnotationCommitReport"
-            ]
-        },
-        {
-            "server" : "DEVSQL17TRZ1",
-            "database" : "CAE_OLTP",
-            "schema" : "log", 
-            "tables" : [
-                "TCS_SEND_LOG"
+                "CMC_EXCD_EXPL_CD"
             ]
         }
     ], 

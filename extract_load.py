@@ -199,6 +199,7 @@ def main(source, destination):
     with pyodbc.connect(destination_target.create_connection_string()) as conn:
         crsr = conn.cursor()
         crsr.execute("EXEC psa.SHS_SP_PSA_LOAD_TABLE @LogicalId = ?", source_target.get_table_metadata_logical_id())
+        crsr.commit()
       
     # update source change log set to complete 
     with pyodbc.connect(destination_target.create_connection_string()) as conn:
@@ -249,6 +250,8 @@ def get_columns(source_target):
                 join sys.columns c on c.object_id = ta.object_id 
                 join sys.types t on t.system_type_id = c.system_type_id
                     AND t.name <> 'sysname'
+                join sys.schemas s on s.schema_id = ta.schema_id 
+		            and s.name = '{source_target.get_schema_name()}'
             where ta.name = '{source_target.get_table_name()}'
             order by column_id asc
         """
@@ -453,7 +456,7 @@ if __name__ == "__main__":
         if sys.argv[1] != None:
             configuration_path = sys.argv[1]
     else:
-        configuration_path = r"E:\code\extract_load\configuration.json"
+        configuration_path = r"configuration.json"
 
     if not configuration_path == None: 
         with open(configuration_path, "rb") as file:
