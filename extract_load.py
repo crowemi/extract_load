@@ -10,6 +10,8 @@ import sys
 import pyodbc
 import json
 
+#TODO: add logging
+
 class SqlServerTarget:
     
     def __init__(self, server, database, table, schema):
