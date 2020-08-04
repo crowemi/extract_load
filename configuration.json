@@ -1,19 +1,89 @@
 {
+    "logging" : {
+        "file_name" : "extract_load",
+        "file_path" : "\\\\shstidaldata\\DEVSHPODataStrategy\\Integration\\IntegrationLogging\\",
+        "log_level" : "DEBUG"
+    },
     "source" : [
         {
+            "type" : "mssql",
+            "server" : "DEVSQL17TRZ1",
+            "database" : "CAE_OLTP",
+            "schema" : "dbo", 
+            "tables" : [
+                { "name": "CONCEPT" },
+                { "name": "EXTERNAL_PHYSICIAN" },
+                { "name": "MEMBER" },
+                { "name": "MEMBER_COVERAGE" },
+                { "name": "MEMBER_ELIGIBILITY" },
+                { "name": "ORG_CASE" },
+                { "name": "ORG_INFO" },
+                { "name": "ORG_NOTEPAD" },
+                { "name": "ORG_PATIENT" },
+                { "name": "ORG_PHYSICIAN" },
+                { "name": "ORG_UM_AUTH_STATUS_TYPE" },
+                { "name": "ORG_UM_CASE" },
+                { "name": "ORG_UM_CASE_DIAGNOSIS" },
+                { "name": "ORG_UM_CASE_PROCEDURE" },
+                { "name": "ORG_UM_LOS" },
+                { "name": "ORG_UM_LOS_EXTENSION" },
+                { "name": "ORG_UM_SERVICE" },
+                { "name": "ORG_UM_SERVICE_CERT" },
+                { "name": "ORG_USER" },
+                { "name": "PNANNOTATIONCOMMITREPORT" },
+                { "name": "RESOURCE_FILE" },
+                { "name": "STRING_LOCALE" },
+                { "name": "FORM_QUESTION" },
+                { "name": "ORG_UM_CASE_LOG" }
+            ]
+        }, 
+        {
+            "type" : "mssql",
+            "server" : "DEVSQL17TRZ1",
+            "database" : "CAE_OLTP",
+            "schema" : "log", 
+            "tables" : [
+                { "name": "TCS_SEND_LOG" }
+            ]
+        }, 
+        {
+            "type" : "mssql",
+            "server" : "DEVSQL17TRZ3",
+            "database" : "TCS_COMP",
+            "schema" : "dbo", 
+            "tables" : [
+                { "name": "TZCS_ITAC_ACTIVITY" },
+                { "name": "TZCS_CDDF_CODE_DEFINITION" },
+                { "name": "TZCS_ECIT_ITEM" }
+            ]
+        },
+        {
+            "type" : "mssql",
             "server" : "DEVSQL17TRZ3",
             "database" : "facets",
             "schema" : "dbo", 
             "tables" : [
-                "CMC_EXCD_EXPL_CD"
+                { "name": "CMC_CLHP_HOSP" },
+                { "name": "CMC_MECM_COMM" }
             ]
         }
+   
     ], 
     "destination" : {
         "server" : "DEVSQL17TRZRP",
         "database" : "hpXr_Stage",
         "schema" : "stg",
         "load_psa" : true
+    },
+    "datatype_conversion" : {
+        "mssql" : {
+            "float64" : "bigint", 
+            "bytes" : "binary",
+            "bool" : "bit",
+            "str" : "varchar",
+            "datetime" : "datetime",
+            "int" : "int32",
+            "object" : "varchar"
+        }
     }
-
-}
+ }
