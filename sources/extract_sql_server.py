@@ -72,10 +72,12 @@ class SqlServerTarget:
     def set_table_metadata_logical_id(self, table_metadata_logical_id):
         self._table_metadata_logical_id = table_metadata_logical_id
 
-    def create_engine(self):
+    #TODO: configurable isolation_level
+    def create_engine(self, isolation_level=None):
         connection_string = self.create_connection_string()
         params = urllib.parse.quote_plus(connection_string)
-        return create_engine("mssql+pyodbc:///?odbc_connect=%s" % params, fast_executemany=True)
+        # isolation_level="SNAPSHOT
+        return create_engine("mssql+pyodbc:///?odbc_connect=%s" % params, fast_executemany=True, isolation_level="READ COMMITTED" if isolation_level is None else isolation_level)
    
     def get_primary_keys(self): 
         """Get primary key metadata (column_id, column_name, data_type, length, precision, scale). Return list of columns."""

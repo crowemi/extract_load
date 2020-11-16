@@ -6,12 +6,17 @@ from datetime import datetime
 import time
 import psutil
 import gc 
-import sys
+import sys, traceback
 import pyodbc
 import json
 import os, glob
+import binascii
 
+# targets 
 from sources.extract_sql_server import SqlServerTarget
+from sources.extract_excel import ExcelTarget
+from sources.extract_csv import CsvTarget
+
 import extract_log
 
 import logging
@@ -56,33 +61,97 @@ class Consumer(multiprocessing.Process):
         return
 
 class Task(object):
-    def __init__(self, chunk, server, table, database, schema, is_chunks):
+    def __init__(self, chunk, server, table, database, schema, is_chunks, psa_only):
         self.chunk = chunk
         self.table = table
         self.database = database
         self.target = SqlServerTarget(server, database, table, schema)
         self.is_chunks = is_chunks
+        self.logger = logging.getLogger()
+        self.psa_only = psa_only
+
+        # look up the current
+        if self.psa_only: 
+            # get current chunk records for lookup
+            chunk[1]['RECORD_UID'].to_sql(
+                name=f'{table}_CHUNK_{chunk[0]}', #temp table name for this chunk
+                schema='tmp', 
+                index=False, 
+                if_exists='replace', #drop table it the temp table already exists
+                con=self.target.create_engine()
+            )
+                
+            query=f"SELECT psa.HPXR_UID, psa.RECORD_UID, psa.RECORD_HASH FROM {database}.{schema}.{table} psa JOIN tmp.{table}_CHUNK_{chunk[0]} tmp ON tmp.RECORD_UID = CONVERT(VARCHAR(MAX), psa.RECORD_UID) WHERE psa.IS_CURRENT = 1"
+
+            lookup = pd.read_sql_query(
+                sql=query,
+                con=self.target.create_engine(isolation_level="SNAPSHOT")
+            )
+            merge_df = pd.merge(chunk[1], lookup[['RECORD_UID', 'RECORD_HASH']], how='left', indicator=True, on=['RECORD_UID', 'RECORD_HASH'])
+            
+            self.load_df = merge_df[merge_df['_merge'] == 'left_only']
+            self.load_df = self.load_df.drop(['_merge'], axis=1)
+
+            # get another subset merged on 
+            self.update_df = pd.merge(lookup, self.load_df[['RECORD_UID']], how='inner', on=['RECORD_UID'])
+        else: 
+            self.load_df = chunk[1]
+            self.update_df = pd.DataFrame()
 
     def process_record_chunk(self):
-        logger.info(f'Preparing to load chunk {self.chunk[0]}.')
+        self.logger.info(f'Preparing to load chunk {self.chunk[0]}.')
+        if not self.load_df.empty:
+            try:
+                # load records 
+                self.load_df.to_sql(name=self.table, index=False, schema=self.target.get_schema_name(), if_exists='append', con=self.target.create_engine())
+                self.logger.info(f'Loaded chunk {self.chunk[0]}.')
+                
+                if len(self.update_df) > 0 and self.psa_only: 
+                    for row in self.update_df.itertuples():
+                        try:
+                            with pyodbc.connect(self.target.create_connection_string()) as conn:
+                                crsr = conn.cursor()
+                                update_is_current = "UPDATE psa SET IS_CURRENT = 0 FROM {0}.{1}.{2} psa WHERE psa.HPXR_UID = 0x{3}".format(
+                                        self.target.get_database_name(), 
+                                        self.target.get_schema_name(), 
+                                        self.target.get_table_name(), 
+                                        binascii.b2a_hex(row.HPXR_UID).decode('utf-8') #convert to hexidecimal to join up with SQL Server 
+                                    )
+                                crsr.execute(update_is_current)
+                                crsr.close()
+
+                        except pyodbc.Error as e: 
+                            logger.error(f'{e}')
+                            raise Exception(e)
+                        except Exception as e: 
+                            logger.error(f'Unexpexted error: {e}')
+                            raise Exception(e)
+                
+            except:
+                exc_type, exc_value, exc_traceback = sys.exc_info()
+                self.logger.error(f"Unable to load chunk {self.chunk[1]}")
+                self.logger.error(f'Unexpexted error: {traceback.print_exception(exc_type, exc_value, exc_traceback, limit=2, file=sys.stdout)}')
+                raise sys.exit()
         try:
-            # load records 
-            self.chunk[1].to_sql(name=self.table, index=False, schema=self.target.get_schema_name(), if_exists='append', con=self.target.create_engine())
-            logger.info(f'Loaded chunk {self.chunk[0]}.')
-        except:
-            logger.error(f"Unable to load chunk {self.chunk[1]}")
-            logger.error(f'Unexpexted error: {sys.exc_info()[0]}')
+            with pyodbc.connect(self.target.create_connection_string()) as conn:
+                crsr = conn.cursor()
+                drop_temp_table = f"DROP TABLE IF EXISTS tmp.{self.table}_CHUNK_{self.chunk[0]}"
+                crsr.execute(drop_temp_table)
+                crsr.close()
+        except: 
+            self.logger.error(f"Unable to drop table tmp.{self.table}_CHUNK_{self.chunk[0]}")
+            self.logger.error(f'Unexpexted error: {sys.exc_info()[0]}')
             raise Exception()
 
     def process_record(self):
-        logger.info(f'Preparing to load chunk {self.chunk}.')
+        self.logger.info(f'Preparing to load chunk {self.chunk}.')
         try:
             # load records 
             self.chunk.to_sql(name=self.table, index=False, schema=self.target.get_schema_name(), if_exists='append', con=self.target.create_engine())
-            logger.info(f'Loaded chunk {self.chunk}.')
+            self.logger.info(f'Loaded chunk {self.chunk}.')
         except:
-            logger.error(f"Unable to load chunk {self.chunk}")
-            logger.error(f'Unexpexted error: {sys.exc_info()[0]}')
+            self.logger.error(f"Unable to load chunk {self.chunk}")
+            self.logger.error(f'Unexpexted error: {sys.exc_info()[0]}')
             raise Exception()
 
     def __call__(self, logger):
@@ -91,9 +160,8 @@ class Task(object):
         else:
             self.process_record()
 
-EXCEL_EXTENSIONS = [ "xls", "xlsx", "xlsm", "xlsb", "obf" ]
 
-def extract_load(generator, log_queue, destination_target, is_chunks):
+def extract_load(generator, log_queue, destination_target, is_chunks, psa_only=None):
 
     logger = logging.getLogger()
     logger.info('Main: Starting.')
@@ -133,7 +201,8 @@ def extract_load(generator, log_queue, destination_target, is_chunks):
                     destination_target.get_table_name(), 
                     destination_target.get_database_name(), 
                     destination_target.get_schema_name(),
-                    is_chunks
+                    is_chunks,
+                    psa_only
                 )
             )
     else:
@@ -144,7 +213,8 @@ def extract_load(generator, log_queue, destination_target, is_chunks):
                 destination_target.get_table_name(), 
                 destination_target.get_database_name(), 
                 destination_target.get_schema_name(),
-                is_chunks
+                is_chunks,
+                psa_only
             )
         )
 
@@ -204,8 +274,6 @@ def column_metadata_to_json(columns):
             ret += ','
     ret += ']'
     return ret
-
-
 
 #TODO: Create unit test
 def get_previous_change_tracking_key(source_target, destination_target):
@@ -442,10 +510,17 @@ def load_psa(destination_target, logical_id):
     logger.info("load_psa: Entering.")
 
     # execute SHS_SP_PSA_LOAD
-    with pyodbc.connect(destination_target.create_connection_string()) as conn:
-        crsr = conn.cursor()
-        crsr.execute("EXEC psa.SHS_SP_PSA_LOAD_TABLE @LogicalId = ?", logical_id)
-        crsr.commit()
+    try:
+        with pyodbc.connect(destination_target.create_connection_string()) as conn:
+            crsr = conn.cursor()
+            crsr.execute("EXEC psa.SHS_SP_PSA_LOAD_TABLE @LogicalId = ?", logical_id)
+            crsr.commit()
+    except pyodbc.Error as e: 
+        logger.error(f'{e}')
+        raise Exception(e)
+    except Exception as e: 
+        logger.error(f'Unexpexted error: {e}')
+        raise Exception(e)
 
     logger.info("load_psa: Leaving.")
 
@@ -480,6 +555,24 @@ def archive_file(path, new_path):
     os.rename(path, new_path)
     logger.info('archive_file Leaving.')
 
+def get_data_source_id(process_name, vendor_name, destination_target):
+    
+    data_source_id = 0
+
+    try:
+        with pyodbc.connect(destination_target.create_connection_string()) as conn:
+            crsr = conn.cursor()
+            crsr.execute("SELECT ds.DATA_SOURCE_ID FROM dbo.DATA_SOURCE ds WHERE ds.DATA_SOURCE_NAME = UPPER('{0}')".format(vendor_name))
+            data_source_id = crsr.fetchval()
+    except pyodbc.Error as e: 
+        logger.error(f'{e}')
+        raise Exception(e)
+    except Exception as e: 
+        logger.error(f'Unexpexted error: {e}')
+        raise Exception(e)
+
+    return data_source_id
+
 
 # extract types
 #TODO: Create unit test
@@ -513,19 +606,33 @@ def extract_mssql(source, log_queue):
         else:
             psa_batch_size = None
 
+        # determine whether to leverage PSA only or STG
+        if 'psa_only' in table_config: 
+            psa_only = True
+        else: 
+            psa_only = False
+
         logger.debug("Source table: {0}".format(table))
 
         source_target = SqlServerTarget(source_server, source_database, table, source_schema)
 
+        if psa_only: 
+            destination_table = create_psa_table_name(
+                    source_target.get_table_name().upper(),
+                    source_target.get_database_name().upper() 
+                )
+        else: 
+            destination_table = create_stg_table_name(
+                    source_target.get_table_name().upper(),
+                    source_target.get_database_name().upper() 
+                )
+        
         # create destination target
         destination_target = SqlServerTarget(
                 server=destination_server, 
                 database=destination_database, 
-                table=create_stg_table_name(
-                    source_target.get_table_name().upper(),
-                    source_target.get_database_name().upper() 
-                ), 
-                schema=destination_schema,
+                table=destination_table, 
+                schema=destination_schema if not psa_only else 'psa',
                 psa_batch_size=psa_batch_size
         )
 
@@ -538,14 +645,15 @@ def extract_mssql(source, log_queue):
             crsr = conn.cursor() 
 
             # create stage/psa tables if not exists
-            if not check_stg_table_exists(process_name=source_target.get_table_name(), vendor_name=source_target.get_database_name(), destination_target=destination_target):
-                create_stg_table(
-                    process_name=source_target.get_table_name(), 
-                    vendor_name=source_target.get_database_name(), 
-                    destination_target=destination_target, 
-                    columns=column_metadata_to_json(source_target.get_columns()), 
-                    primary_keys=column_metadata_to_json(source_target.get_primary_keys())
-                )
+            if not psa_only:
+                if not check_stg_table_exists(process_name=source_target.get_table_name(), vendor_name=source_target.get_database_name(), destination_target=destination_target):
+                    create_stg_table(
+                        process_name=source_target.get_table_name(), 
+                        vendor_name=source_target.get_database_name(), 
+                        destination_target=destination_target, 
+                        columns=column_metadata_to_json(source_target.get_columns()), 
+                        primary_keys=column_metadata_to_json(source_target.get_primary_keys())
+                    )
 
             if not check_psa_table_exists(process_name=source_target.get_database_name(), vendor_name=source_target.get_table_name(), destination_target=destination_target):
                 create_psa_table(
@@ -557,7 +665,8 @@ def extract_mssql(source, log_queue):
                 )
 
             # truncate stage
-            truncate_stage_table(process_name=source_target.get_table_name(), vendor_name=source_target.get_database_name(), destination_target=destination_target)
+            if not psa_only:
+                truncate_stage_table(process_name=source_target.get_table_name(), vendor_name=source_target.get_database_name(), destination_target=destination_target)
 
             # process table metadata
             if not check_table_metadata(process_name=source_target.get_table_name(), vendor_name=source_target.get_database_name(), destination_target=destination_target):
@@ -607,9 +716,12 @@ def extract_mssql(source, log_queue):
             source_target.set_previous_change_key(get_previous_change_tracking_key(source_target=source_target, destination_target=destination_target))
 
         # begin processing
-        conn = source_target.create_engine()
+        conn = source_target.create_engine(isolation_level="SNAPSHOT")
+
+        data_source_id = get_data_source_id(process_name=source_target.get_table_name(), vendor_name=source_target.get_database_name(), destination_target=destination_target)
 
         # create a column listing to handle max date limitations in Pandas
+        column_list_record_hash = '' # DEVOPS#3442
         column_list = ''
         columns = source_target.get_columns()
 
@@ -617,28 +729,46 @@ def extract_mssql(source, log_queue):
             # this is required because pandas dataframe has a max date of 4/11/2262 -- MAC 2020-05-18 
             if column[2] == 'datetime':
                 column_list += f"CASE WHEN t.[{column[1]}] > '4/11/2262' THEN NULL ELSE t.[{column[1]}] END [{column[1]}]"
+                column_list_record_hash += f"CASE WHEN t.[{column[1]}] > '4/11/2262' THEN NULL ELSE t.[{column[1]}] END" # DEVOPS#3442 -- no column name  
             elif column[2] == 'timestamp': 
                 column_list += f"CONVERT(VARCHAR(MAX), CONVERT(BINARY(8), [{column[1]}]), 1) {column[1]}"
+                column_list_record_hash += f"CONVERT(VARCHAR(MAX), CONVERT(BINARY(8), [{column[1]}]), 1)" # DEVOPS#3442 -- no column name  
             else:
                 column_list += f"t.[{column[1]}]"
+                column_list_record_hash += f"t.[{column[1]}]" # DEVOPS#3442
             
             if not (len(columns)-1) == index:
                 column_list += ', '
+                column_list_record_hash += ', ' # DEVOPS#3442
 
         if source_target.get_previous_change_key() is not None:
             primary_key_list = ''
+            primary_key_list_record_uid = ''
             primary_key_predicate = ''
             primary_keys = source_target.get_primary_keys()
             for index, key in enumerate(primary_keys):
                 primary_key_list += f'{key[1]}'
+                primary_key_list_record_uid += f't.[{key[1]}]'
                 primary_key_predicate += f'ct.[{key[1]}] = t.[{key[1]}]'
                 if not (len(primary_keys)-1) == index:
                     primary_key_list += ','
+                    primary_key_list_record_uid += ','
                     primary_key_predicate += ' AND '
+            
+            if len(primary_keys) > 1: 
+                primary_key_list_record_uid = 'CONCAT({0})'.format(primary_key_list_record_uid)
+            else: 
+                primary_key_list_record_uid = 'CONVERT(VARCHAR(MAX), {0})'.format(primary_key_list_record_uid)
 
-            query = f"""SELECT {column_list} FROM {source_target.get_database_name()}.{source_target.get_schema_name()}.{source_target.get_table_name()} t JOIN (SELECT {primary_key_list} FROM CHANGETABLE(CHANGES {source_target.get_schema_name()}.{source_target.get_table_name()}, {source_target.get_previous_change_key()}) ct ) ct ON {primary_key_predicate}"""
+            if psa_only: 
+                query = f"""SELECT HASHBYTES('SHA1', CONVERT(VARCHAR(MAX), NEWID())) HPXR_UID, HASHBYTES('SHA1', {primary_key_list_record_uid}) RECORD_UID, HASHBYTES('SHA1', CONCAT({column_list_record_hash})) RECORD_HASH, {data_source_id} DATA_SOURCE_ID, {column_list} FROM {source_target.get_database_name()}.{source_target.get_schema_name()}.{source_target.get_table_name()} t JOIN (SELECT {primary_key_list} FROM CHANGETABLE(CHANGES {source_target.get_schema_name()}.{source_target.get_table_name()}, {source_target.get_previous_change_key()}) ct ) ct ON {primary_key_predicate}"""
+            else:
+                query = f"""SELECT {column_list} FROM {source_target.get_database_name()}.{source_target.get_schema_name()}.{source_target.get_table_name()} t JOIN (SELECT {primary_key_list} FROM CHANGETABLE(CHANGES {source_target.get_schema_name()}.{source_target.get_table_name()}, {source_target.get_previous_change_key()}) ct ) ct ON {primary_key_predicate}"""
         else: 
-            query = f"""SELECT {column_list} FROM {source_target.get_database_name()}.{source_target.get_schema_name()}.{source_target.get_table_name()} t"""
+            if psa_only:
+                query = f"""SELECT HASHBYTES('SHA1', CONVERT(VARCHAR(MAX), NEWID())) HPXR_UID, HASHBYTES('SHA1', CONCAT({column_list_record_hash})) RECORD_UID, HASHBYTES('SHA1', CONCAT({column_list_record_hash})) RECORD_HASH, {data_source_id} DATA_SOURCE_ID, {column_list} FROM {source_target.get_database_name()}.{source_target.get_schema_name()}.{source_target.get_table_name()} t"""
+            else: 
+                query = f"""SELECT {column_list} FROM {source_target.get_database_name()}.{source_target.get_schema_name()}.{source_target.get_table_name()} t"""
 
         generator = pd.read_sql_query(query, conn, chunksize=(25000 if source_target.get_chunk_size() is None else source_target.get_chunk_size()))
 
@@ -646,10 +776,13 @@ def extract_mssql(source, log_queue):
             generator=generator, 
             log_queue=log_queue, 
             destination_target=destination_target,
-            is_chunks=True
+            is_chunks=True,
+            psa_only=psa_only
         )
 
-        load_psa(destination_target=destination_target, logical_id=source_target.get_table_metadata_logical_id())
+        #TODO: Once all tables converted to psa_only, remove this
+        if not psa_only:
+            load_psa(destination_target=destination_target, logical_id=source_target.get_table_metadata_logical_id())
         
         # update source change log set to complete 
         with pyodbc.connect(destination_target.create_connection_string()) as conn:
@@ -660,8 +793,9 @@ def extract_mssql(source, log_queue):
     logger.debug("End of tables.")
 
 #TODO: Create unit test
+EXCEL_EXTENSIONS = [ "xls", "xlsx", "xlsm", "xlsb", "obf" ]
 def extract_excel(source, log_queue):
-    """Process which extracts CSV files in the extract load process. 
+    """Process which extracts Excel files in the extract load process. 
 
         Keyword arguments:
         source - The configuration for the source files.  
@@ -675,51 +809,10 @@ def extract_excel(source, log_queue):
 
     file_iterator = 1
 
-    for file in source['files']: 
-        # get configuration variables
-        if not 'vendor_name' in file:
-            logger.warn('No "vendor" attribute supplied in configuration for file at position {0}.'.format(file_iterator))
-            break
-        vendor_name = file['vendor_name']
-
-        if not 'process_name' in file:
-            logger.warn('No "process" attribute supplied in configuration for file at position {0}.'.format(file_iterator))
-            break
-        process_name = file['process_name']
-
-        #TODO validate inputs
-        if not 'path' in file:
-            logger.warn('No "path" attribute supplied in configuration for file at position {0}.'.format(file_iterator))
-            break
-        path = file['path']
-
-        #TODO: Implement optional parameters
-        # optional attributes
-        
-        psa_batch_size = file['psa_batch_size']
-        logger.debug("psa_batch_size: {0}".format(psa_batch_size))
-
-        is_archive_file = file['archive_file']
-        logger.debug("archive_file: {0}".format(archive_file))
-
-        archive_file_path = file['archive_file_path']
-        logger.debug("archive_file_path: {0}".format(archive_file_path))
-        
-        is_delete_file = file['delete_file']
-        logger.debug("delete_file: {0}".format(delete_file))
-
-        first_row_header = file['first_row_header']
-        logger.debug("first_row_header: {0}".format(first_row_header))
-
-        skip_rows = file['skip_rows']
-        logger.debug("skip_rows: {0}".format(first_row_header))
-
-        if not 'primary_key' in file:
-            primary_keys = None
-        else: 
-            primary_keys = file['primary_key']
+    for file_configuration in source['files']: 
+        excel = ExcelTarget(file_configuration)
             
-        logger.debug('primary_key: {0}'.format(primary_keys))
+        logger.debug('primary_key: {0}'.format(excel.get_primary_key()))
 
         df = pd.DataFrame()
 
@@ -728,36 +821,46 @@ def extract_excel(source, log_queue):
                 server=destination_server, 
                 database=destination_database, 
                 table=create_stg_table_name(
-                    process_name.upper(),
-                    vendor_name.upper() 
+                    excel.get_process_name().upper(),
+                    excel.get_vendor_name().upper() 
                 ), 
                 schema=destination_schema,
-                psa_batch_size=psa_batch_size
+                psa_batch_size=excel.get_psa_batch_size()
         )
 
         excel_files = [] 
 
         # EXCEL_EXTENSIONS: xls, xlsx, xlsm, xlsb, and odf
         for ext in EXCEL_EXTENSIONS:
-            for file in glob.glob(os.path.join(path, "*.{0}".format(ext))):
+            for file in glob.glob(os.path.join(excel.get_path(), "*.{0}".format(ext))):
                 excel_files.append(file)
 
         for file in excel_files:
 
             df = pd.read_excel(
-                io=os.path.join(path, file), 
+                io=os.path.join(excel.get_path(), file), 
                 dtype=str,
-                skiprows=None if skip_rows <= 0 else skip_rows
+                skiprows=excel.get_skip_rows()
             )
 
-            if skip_rows < 0:
-                df = df[:(len(df) + skip_rows)]
+            # negative skip rows 
+            if excel.get_skip_rows() < 0:
+                df = df[:(len(df) + excel.get_skip_rows())]
 
             #TODO: Check to make sure file will load to table, file schema matches table schema
             logger.info('Processing file {0}'.format(file))
             
             # check stage/psa tables exist
-            if not check_stg_table_exists(process_name=process_name, vendor_name=vendor_name, destination_target=destination_target) or not check_psa_table_exists(process_name=process_name, vendor_name=vendor_name, destination_target=destination_target):
+            if not check_stg_table_exists(
+                process_name=excel.get_process_name(), 
+                vendor_name=excel.get_vendor_name(), 
+                destination_target=destination_target
+            ) or not check_psa_table_exists(
+                process_name=excel.get_process_name(), 
+                vendor_name=excel.get_vendor_name(), 
+                destination_target=destination_target
+            ):
+                
                 logger.info('Destination tables missing...')
                 
                 # create dataframe of file columns
@@ -782,7 +885,7 @@ def extract_excel(source, log_queue):
 
                 column_df = metadata_df.append(column_df, ignore_index=True)
                 
-                if primary_keys:
+                if excel.get_primary_key():
                     primary_key_df = pd.DataFrame(dtype=str)
                     
                     for index, key in enumerate(primary_keys):
@@ -802,55 +905,55 @@ def extract_excel(source, log_queue):
                 columns = column_df.to_json(orient='records')
                 
                 logger.debug(columns)
-                logger.debug(primary_keys)
+                logger.debug(excel.get_primary_key())
 
                 create_stg_table(
-                    process_name=process_name, 
-                    vendor_name=vendor_name, 
+                    process_name=excel.get_process_name(), 
+                    vendor_name=excel.get_vendor_name(), 
                     destination_target=destination_target, 
                     columns=columns, 
-                    primary_keys=primary_keys
+                    primary_keys=excel.get_primary_key()
                 )
 
                 create_psa_table(
-                    process_name=process_name, 
-                    vendor_name=vendor_name, 
+                    process_name=excel.get_process_name(), 
+                    vendor_name=excel.get_vendor_name(), 
                     destination_target=destination_target, 
                     columns=columns, 
-                    primary_keys=primary_keys
+                    primary_keys=excel.get_primary_key()
                 )
 
             # truncate stage
-            truncate_stage_table(process_name=process_name, vendor_name=vendor_name, destination_target=destination_target)
+            truncate_stage_table(process_name=excel.get_process_name(), vendor_name=excel.get_vendor_name(), destination_target=destination_target)
 
             # process table metadata
             if not check_table_metadata(
-                process_name=process_name, 
-                vendor_name=vendor_name, 
+                process_name=excel.get_process_name(), 
+                vendor_name=excel.get_vendor_name(), 
                 destination_target=destination_target
             ):
                 # create new record and return logical id
-                logger.info('Creating table metadata record for {0}.'.format(create_stg_table_name(process_name=process_name, vendor_name=vendor_name)))
+                logger.info('Creating table metadata record for {0}.'.format(create_stg_table_name(process_name=excel.get_process_name(), vendor_name=excel.get_vendor_name())))
                 destination_target.set_table_metadata_logical_id(
                     insert_table_metadata_logical_id(
-                        process_name=process_name, 
-                        vendor_name=vendor_name, 
+                        process_name=excel.get_process_name(), 
+                        vendor_name=excel.get_vendor_name(), 
                         destination_target=destination_target
                     )
                 )
             else: 
                 # get logical id for existing record
-                logger.info('Get table metadata record for {0}.'.format(create_stg_table_name(process_name=process_name, vendor_name=vendor_name)))
+                logger.info('Get table metadata record for {0}.'.format(create_stg_table_name(process_name=excel.get_process_name(), vendor_name=excel.get_vendor_name())))
                 update_table_metadata(
-                    process_name=process_name,
-                    vendor_name=vendor_name,
+                    process_name=excel.get_process_name(),
+                    vendor_name=excel.get_vendor_name(),
                     destination_target=destination_target
                 )
 
                 destination_target.set_table_metadata_logical_id(
                     get_table_metadata_logical_id(
-                        process_name=process_name, 
-                        vendor_name=vendor_name, 
+                        process_name=excel.get_process_name(), 
+                        vendor_name=excel.get_vendor_name(), 
                         destination_target=destination_target
                     )
                 )
@@ -863,15 +966,202 @@ def extract_excel(source, log_queue):
             
             df.to_sql(name=destination_target.get_table_name(), index=False, schema=destination_target.get_schema_name(), if_exists='append', con=destination_target.create_engine())
 
-            if is_delete_file:
-                delete_file(os.path.join(path, file))
+            if excel.get_is_delete_file():
+                delete_file(os.path.join(excel.get_path(), file))
                 
-            if is_archive_file:
+            if excel.get_is_archive_file():
                 archive_file(
-                    os.path.join(path, file), 
-                    os.path.join(archive_file_path, file)
+                    os.path.join(excel.get_path(), file), 
+                    os.path.join(excel.get_archive_file_path(), file)
                 )
-                delete_file(os.path.join(path, file))
+                delete_file(os.path.join(excel.get_path(), file))
+
+            load_psa(
+                destination_target=destination_target, 
+                logical_id=destination_target.get_table_metadata_logical_id()
+            )
+
+#TODO: Create unit test
+CSV_EXTENSIONS = [ "txt", "csv" ]
+def extract_csv(source, log_queue): 
+    """Process which extracts CSV files in the extract load process. 
+
+        Keyword arguments:
+        source - The configuration for the source files.  
+        log_queue - The multiprocessing queue object for recording logging evengs. (Multiprocessing.Queue) 
+    """
+    logger = logging.getLogger()
+
+    # check that the files key exists within the configuration
+    if not 'files' in source:
+        logger.warn('No files to process.')
+
+    file_iterator = 1
+
+    for file_configuration in source['files']: 
+        csv = CsvTarget(file_configuration)
+            
+        logger.debug('primary_key: {0}'.format(csv.get_primary_key()))
+
+        df = pd.DataFrame()
+
+        # create destination target
+        destination_target = SqlServerTarget(
+                server=destination_server, 
+                database=destination_database, 
+                table=create_stg_table_name(
+                    csv.get_process_name().upper(),
+                    csv.get_vendor_name().upper() 
+                ), 
+                schema=destination_schema,
+                psa_batch_size=csv.get_psa_batch_size()
+        )
+
+        csv_files = [] 
+
+        # EXCEL_EXTENSIONS: xls, xlsx, xlsm, xlsb, and odf
+        for ext in CSV_EXTENSIONS:
+            for file in glob.glob(os.path.join(csv.get_path(), "*.{0}".format(ext))):
+                csv_files.append(file)
+
+        for file in csv_files:
+
+            df = pd.read_csv(
+                os.path.join(csv.get_path(), file),
+                sep='|',
+                dtype=str
+            )
+
+            columns = df.columns
+
+            #TODO: Check to make sure file will load to table, file schema matches table schema
+            logger.info('Processing file {0}'.format(file))
+            
+            # check stage/psa tables exist
+            if not check_stg_table_exists(
+                process_name=csv.get_process_name(), 
+                vendor_name=csv.get_vendor_name(), 
+                destination_target=destination_target
+            ) or not check_psa_table_exists(
+                process_name=csv.get_process_name(), 
+                vendor_name=csv.get_vendor_name(), 
+                destination_target=destination_target
+            ):
+                
+                logger.info('Destination tables missing...')
+                
+                # create dataframe of file columns
+                data = {
+                    'columnd_id' : range(2, len(df.columns) + 2), 
+                    'column_name' : df.columns, 
+                    'data_type' : 'varchar', 
+                    'length' : 0,
+                    'precision' : 0, 
+                    'scale' : 0 }
+                column_df = pd.DataFrame(data, dtype=str)
+
+                # add metadata 
+                metadata = {
+                    'columnd_id' : 1, 
+                    'column_name' : 'HPXR_FILE_NAME', 
+                    'data_type' : 'varchar', 
+                    'length' : 0,
+                    'precision' : 0, 
+                    'scale' : 0 }
+                metadata_df = pd.DataFrame(metadata, index=[0], dtype=str)
+
+                column_df = metadata_df.append(column_df, ignore_index=True)
+                
+                if csv.get_primary_key():
+                    primary_key_df = pd.DataFrame(dtype=str)
+                    
+                    for index, key in enumerate(primary_keys):
+                        current_key_df = pd.DataFrame({ 'column_id' : (index + 1), 'column_name' : key['column_name'], 'data_type' : key['data_type'], 'length' : key['length'], 'precision' : 0, 'scale' : 0}, index=[0], dtype=str)
+                        primary_key_df = primary_key_df.append(current_key_df, ignore_index=True)
+
+                        # update the columns dataframe with metadata from primary key
+                        current_key_in_columns = column_df.loc[column_df['column_name'] == key['column_name']]
+                        current_key_in_columns['data_type'] = key['data_type']
+                        current_key_in_columns['length'] = key['length']
+
+                        column_df.update(current_key_in_columns)
+
+                    primary_keys = primary_key_df.to_json(orient='records')
+
+
+                columns = column_df.to_json(orient='records')
+                
+                logger.debug(columns)
+                logger.debug(csv.get_primary_key())
+
+                create_stg_table(
+                    process_name=csv.get_process_name(), 
+                    vendor_name=csv.get_vendor_name(), 
+                    destination_target=destination_target, 
+                    columns=columns, 
+                    primary_keys=csv.get_primary_key()
+                )
+
+                create_psa_table(
+                    process_name=csv.get_process_name(), 
+                    vendor_name=csv.get_vendor_name(), 
+                    destination_target=destination_target, 
+                    columns=columns, 
+                    primary_keys=csv.get_primary_key()
+                )
+
+            # truncate stage
+            truncate_stage_table(process_name=csv.get_process_name(), vendor_name=csv.get_vendor_name(), destination_target=destination_target)
+
+            # process table metadata
+            if not check_table_metadata(
+                process_name=csv.get_process_name(), 
+                vendor_name=csv.get_vendor_name(), 
+                destination_target=destination_target
+            ):
+                # create new record and return logical id
+                logger.info('Creating table metadata record for {0}.'.format(create_stg_table_name(process_name=csv.get_process_name(), vendor_name=csv.get_vendor_name())))
+                destination_target.set_table_metadata_logical_id(
+                    insert_table_metadata_logical_id(
+                        process_name=csv.get_process_name(), 
+                        vendor_name=csv.get_vendor_name(), 
+                        destination_target=destination_target
+                    )
+                )
+            else: 
+                # get logical id for existing record
+                logger.info('Get table metadata record for {0}.'.format(create_stg_table_name(process_name=csv.get_process_name(), vendor_name=csv.get_vendor_name())))
+                update_table_metadata(
+                    process_name=csv.get_process_name(),
+                    vendor_name=csv.get_vendor_name(),
+                    destination_target=destination_target
+                )
+
+                destination_target.set_table_metadata_logical_id(
+                    get_table_metadata_logical_id(
+                        process_name=csv.get_process_name(), 
+                        vendor_name=csv.get_vendor_name(), 
+                        destination_target=destination_target
+                    )
+                )
+
+            file_iterator += 1
+
+            logger.info('Writing records to table {0}'.format(destination_target.get_table_name()))
+
+            df['HPXR_FILE_NAME'] = os.path.basename(file)
+            
+            df.to_sql(name=destination_target.get_table_name(), index=False, schema=destination_target.get_schema_name(), if_exists='append', con=destination_target.create_engine())
+
+            if csv.get_is_delete_file():
+                delete_file(os.path.join(csv.get_path(), file))
+                
+            if csv.get_is_archive_file():
+                archive_file(
+                    os.path.join(csv.get_path(), file), 
+                    os.path.join(csv.get_archive_file_path(), file)
+                )
+                delete_file(os.path.join(csv.get_path(), file))
 
             load_psa(
                 destination_target=destination_target, 
@@ -927,6 +1217,9 @@ if __name__ == "__main__":
 
         if source_type == 'excel':
             extract_excel(source, log_queue=queue)
+
+        if source_type == 'csv': 
+            extract_csv(source, log_queue=queue)
         
     logger.debug("End of sources.")
     # terminate logging

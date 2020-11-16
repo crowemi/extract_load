@@ -10,9 +10,9 @@ Configuration of the application is performed via JSON. The configuration detail
 
 ### Logging
     "logging" : {
-        "file_name" : "",
-        "file_path" : "",
-        "log_level" : ""
+        "file_name" : string,
+        "file_path" : string,
+        "log_level" : string
     }
 
 - file_name (string): the name of the logging file. A datetime stamp is added to the end of the file name. 
@@ -23,7 +23,7 @@ Configuration of the application is performed via JSON. The configuration detail
 
 #### Microsoft SQL Server Source
     {
-      "type": "sql",
+      "type": "mssql",
       "server" : string,
       "database" : string,
       "schema" : string, 
@@ -35,6 +35,27 @@ Configuration of the application is performed via JSON. The configuration detail
 #### Excel Source
     {
         "type" : "excel",
+        "files" : [
+            { 
+                "vendor_name" : string,
+                "process_name" : string,
+                "path" : string, 
+                "psa_batch_size" : int,
+                "archive_file" : bool,
+                "archive_file_path" : string,
+                "delete_file" : bool,
+                "primary_key" : [
+                    {}
+                ],
+                "first_row_header" : bool,
+                "skip_rows" : int
+            }
+        ]
+    }
+
+#### CSV Source
+    {
+        "type" : "csv",
         "files" : [
             { 
                 "vendor_name" : string,
