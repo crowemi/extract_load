@@ -93,7 +93,16 @@ class Task(object):
             self.load_df = self.load_df.drop(['_merge'], axis=1)
 
             # get another subset merged on 
-            self.update_df = pd.merge(lookup, self.load_df[['RECORD_UID']], how='inner', on=['RECORD_UID'])
+            update_df = pd.merge(lookup, self.load_df[['RECORD_UID']], how='inner', on=['RECORD_UID'])
+            # pushed update records to temp table to facilitate set based update and reduce overhead on memory consumption of app DEVOPS#3499
+            update_df['HPXR_UID'].to_sql(
+                name=f'{table}_CHUNK_{chunk[0]}_UPDATE', #temp table name for this chunk
+                schema='tmp', 
+                index=False, 
+                if_exists='replace', #drop table it the temp table already exists
+                con=self.target.create_engine()
+            )
+
         else: 
             self.load_df = chunk[1]
             self.update_df = pd.DataFrame()
@@ -106,26 +115,26 @@ class Task(object):
                 self.load_df.to_sql(name=self.table, index=False, schema=self.target.get_schema_name(), if_exists='append', con=self.target.create_engine())
                 self.logger.info(f'Loaded chunk {self.chunk[0]}.')
                 
-                if len(self.update_df) > 0 and self.psa_only: 
-                    for row in self.update_df.itertuples():
-                        try:
-                            with pyodbc.connect(self.target.create_connection_string()) as conn:
-                                crsr = conn.cursor()
-                                update_is_current = "UPDATE psa SET IS_CURRENT = 0 FROM {0}.{1}.{2} psa WHERE psa.HPXR_UID = 0x{3}".format(
-                                        self.target.get_database_name(), 
-                                        self.target.get_schema_name(), 
-                                        self.target.get_table_name(), 
-                                        binascii.b2a_hex(row.HPXR_UID).decode('utf-8') #convert to hexidecimal to join up with SQL Server 
-                                    )
-                                crsr.execute(update_is_current)
-                                crsr.close()
+                if self.psa_only: 
+                    try:
+                        with pyodbc.connect(self.target.create_connection_string()) as conn:
+                            crsr = conn.cursor()
+                            update_is_current = "UPDATE psa SET IS_CURRENT = 0 FROM {0}.{1}.{2} psa JOIN tmp.{3}_CHUNK_{4}_UPDATE tmp ON CONVERT(VARCHAR(MAX), psa.HPXR_UID) = tmp.HPXR_UID".format(
+                                    self.target.get_database_name(), 
+                                    self.target.get_schema_name(), 
+                                    self.target.get_table_name(), 
+                                    self.table, 
+                                    self.chunk[0]
+                                )
+                            crsr.execute(update_is_current)
+                            crsr.close()
 
-                        except pyodbc.Error as e: 
-                            logger.error(f'{e}')
-                            raise Exception(e)
-                        except Exception as e: 
-                            logger.error(f'Unexpexted error: {e}')
-                            raise Exception(e)
+                    except pyodbc.Error as e: 
+                        logger.error(f'{e}')
+                        raise Exception(e)
+                    except Exception as e: 
+                        logger.error(f'Unexpexted error: {e}')
+                        raise Exception(e)
                 
             except:
                 exc_type, exc_value, exc_traceback = sys.exc_info()
@@ -135,7 +144,7 @@ class Task(object):
         try:
             with pyodbc.connect(self.target.create_connection_string()) as conn:
                 crsr = conn.cursor()
-                drop_temp_table = f"DROP TABLE IF EXISTS tmp.{self.table}_CHUNK_{self.chunk[0]}"
+                drop_temp_table = f"DROP TABLE IF EXISTS tmp.{self.table}_CHUNK_{self.chunk[0]}; DROP TABLE IF EXISTS tmp.{self.table}_CHUNK_{self.chunk[0]}_UPDATE;"
                 crsr.execute(drop_temp_table)
                 crsr.close()
         except: 
@@ -728,11 +737,11 @@ def extract_mssql(source, log_queue):
         for index, column in enumerate(columns):
             # this is required because pandas dataframe has a max date of 4/11/2262 -- MAC 2020-05-18 
             if column[2] == 'datetime':
-                column_list += f"CASE WHEN t.[{column[1]}] > '4/11/2262' THEN NULL ELSE t.[{column[1]}] END [{column[1]}]"
-                column_list_record_hash += f"CASE WHEN t.[{column[1]}] > '4/11/2262' THEN NULL ELSE t.[{column[1]}] END" # DEVOPS#3442 -- no column name  
+                column_list += f"CONVERT(VARCHAR(MAX), t.{column[1]}, 121) [{column[1]}]" # DEVOPS#3499 -- convert to string
+                column_list_record_hash += f"CONVERT(VARCHAR(MAX), t.{column[1]}, 121)" # DEVOPS#3442 -- no column name  
             elif column[2] == 'timestamp': 
-                column_list += f"CONVERT(VARCHAR(MAX), CONVERT(BINARY(8), [{column[1]}]), 1) {column[1]}"
-                column_list_record_hash += f"CONVERT(VARCHAR(MAX), CONVERT(BINARY(8), [{column[1]}]), 1)" # DEVOPS#3442 -- no column name  
+                column_list += f"CONVERT(VARCHAR(MAX), CONVERT(BINARY(8), t.[{column[1]}]), 1) {column[1]}" # DEVOPS#3499 -- convert to string
+                column_list_record_hash += f"CONVERT(VARCHAR(MAX), CONVERT(BINARY(8), t.[{column[1]}]), 1)" # DEVOPS#3442 -- no column name  
             else:
                 column_list += f"t.[{column[1]}]"
                 column_list_record_hash += f"t.[{column[1]}]" # DEVOPS#3442
@@ -741,32 +750,39 @@ def extract_mssql(source, log_queue):
                 column_list += ', '
                 column_list_record_hash += ', ' # DEVOPS#3442
 
-        if source_target.get_previous_change_key() is not None:
-            primary_key_list = ''
-            primary_key_list_record_uid = ''
-            primary_key_predicate = ''
-            primary_keys = source_target.get_primary_keys()
-            for index, key in enumerate(primary_keys):
-                primary_key_list += f'{key[1]}'
-                primary_key_list_record_uid += f't.[{key[1]}]'
-                primary_key_predicate += f'ct.[{key[1]}] = t.[{key[1]}]'
-                if not (len(primary_keys)-1) == index:
-                    primary_key_list += ','
-                    primary_key_list_record_uid += ','
-                    primary_key_predicate += ' AND '
-            
-            if len(primary_keys) > 1: 
-                primary_key_list_record_uid = 'CONCAT({0})'.format(primary_key_list_record_uid)
-            else: 
-                primary_key_list_record_uid = 'CONVERT(VARCHAR(MAX), {0})'.format(primary_key_list_record_uid)
+        # create a column listing for primary keys
+        primary_key_list = ''
+        primary_key_list_record_uid = ''
+        primary_key_predicate = ''
+        primary_keys = source_target.get_primary_keys()
 
+        for index, key in enumerate(primary_keys):
+            primary_key_list += f'{key[1]}'
+            if primary_keys[index][2] == 'datetime': 
+                primary_key_list_record_uid += f'CONVERT(VARCHAR(MAX), t.[{key[1]}], 121)' # DEVOPS#3499 -- convert to string
+            else: 
+                primary_key_list_record_uid += f't.[{key[1]}]'
+
+            primary_key_predicate += f'ct.[{key[1]}] = t.[{key[1]}]'
+            if not (len(primary_keys)-1) == index:
+                primary_key_list += ','
+                primary_key_list_record_uid += ','
+                primary_key_predicate += ' AND '
+        
+        if len(primary_keys) > 1: 
+            primary_key_list_record_uid = 'CONCAT({0})'.format(primary_key_list_record_uid)
+        else: 
+            primary_key_list_record_uid = 'CONVERT(VARCHAR(MAX), {0})'.format(primary_key_list_record_uid)
+
+        if source_target.get_previous_change_key() is not None:
+            # if there is a previous change key to leverage, we need to query the change table
             if psa_only: 
                 query = f"""SELECT HASHBYTES('SHA1', CONVERT(VARCHAR(MAX), NEWID())) HPXR_UID, HASHBYTES('SHA1', {primary_key_list_record_uid}) RECORD_UID, HASHBYTES('SHA1', CONCAT({column_list_record_hash})) RECORD_HASH, {data_source_id} DATA_SOURCE_ID, {column_list} FROM {source_target.get_database_name()}.{source_target.get_schema_name()}.{source_target.get_table_name()} t JOIN (SELECT {primary_key_list} FROM CHANGETABLE(CHANGES {source_target.get_schema_name()}.{source_target.get_table_name()}, {source_target.get_previous_change_key()}) ct ) ct ON {primary_key_predicate}"""
             else:
                 query = f"""SELECT {column_list} FROM {source_target.get_database_name()}.{source_target.get_schema_name()}.{source_target.get_table_name()} t JOIN (SELECT {primary_key_list} FROM CHANGETABLE(CHANGES {source_target.get_schema_name()}.{source_target.get_table_name()}, {source_target.get_previous_change_key()}) ct ) ct ON {primary_key_predicate}"""
         else: 
             if psa_only:
-                query = f"""SELECT HASHBYTES('SHA1', CONVERT(VARCHAR(MAX), NEWID())) HPXR_UID, HASHBYTES('SHA1', CONCAT({column_list_record_hash})) RECORD_UID, HASHBYTES('SHA1', CONCAT({column_list_record_hash})) RECORD_HASH, {data_source_id} DATA_SOURCE_ID, {column_list} FROM {source_target.get_database_name()}.{source_target.get_schema_name()}.{source_target.get_table_name()} t"""
+                query = f"""SELECT HASHBYTES('SHA1', CONVERT(VARCHAR(MAX), NEWID())) HPXR_UID, HASHBYTES('SHA1', {primary_key_list_record_uid}) RECORD_UID, HASHBYTES('SHA1', CONCAT({column_list_record_hash})) RECORD_HASH, {data_source_id} DATA_SOURCE_ID, {column_list} FROM {source_target.get_database_name()}.{source_target.get_schema_name()}.{source_target.get_table_name()} t"""
             else: 
                 query = f"""SELECT {column_list} FROM {source_target.get_database_name()}.{source_target.get_schema_name()}.{source_target.get_table_name()} t"""
 

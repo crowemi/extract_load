@@ -155,9 +155,9 @@ class SqlServerTarget:
         """Add change tracking to object table."""
 
         add_change_tracking_query = f"ALTER TABLE {self.get_database_name()}.{self.get_schema_name()}.{self.get_table_name()} ENABLE CHANGE_TRACKING"
-        with pyodbc.connect(self.create_connection_string()) as conn:
-            cursor = conn.cursor()
-            cursor.execute(add_change_tracking_query)
+        engine = self.create_engine(isolation_level=None)
+        with engine.connect() as conn:
+            conn.execute(add_change_tracking_query)
 
     def get_new_change_tracking_key(self):
         """Get new change tracking key for object database. Return change tracking key (integer)."""

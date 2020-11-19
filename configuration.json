@@ -11,14 +11,7 @@
             "database" : "facets",
             "schema" : "dbo", 
             "tables" : [
-                { "name": "CMC_MEME_MEMBER", "psa_only": true },
-                { "name": "CMC_SBSB_SUBSC", "psa_only": true },
-                { "name": "CMC_MEPE_PRCS_ELIG", "psa_only": true },
-                { "name": "CMC_PDPD_PRODUCT", "psa_only": true },
-                { "name": "CMC_CSPD_DESC", "psa_only": true },
-                { "name": "CMC_CSPI_CS_PLAN", "psa_only": true },
-                { "name": "CMC_GRGR_GROUP", "psa_only": true },
-                { "name": "CMC_CSCS_CLASS", "psa_only": true }
+                { "name": "CER_ATXR_ATTACH_U", "psa_only": true }
             ]
         }
     ], 
